@@ -10,5 +10,7 @@ window.TMT_CONFIG = {
     TREE_API_PROXY: "",
     PAGE_SIZE: 10,
     CONCURRENCY: 8,
+    // Max extra API requests spent loading nested branches (remixes of remixes).
+    MAX_EXPAND_REQUESTS: 1500,
     CACHE_TTL_MS: 15 * 60 * 1000,
 };
