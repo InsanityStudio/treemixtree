@@ -139,7 +139,7 @@
         return p;
     }
 
-    async function fetchPage(rootId, offset, refresh) {
+    async function fetchPageRaw(rootId, offset, refresh) {
         const timeouts = [15000, 22000, 30000];
         const base = CFG.TREE_API_PROXY || CFG.TREE_API;
         const url = base + rootId + "?offset=" + offset + (refresh && CFG.TREE_API_PROXY ? "&refresh=1" : "");
@@ -156,6 +156,21 @@
             await sleep(350 * (attempt + 1));
         }
         return null;
+    }
+
+    // Global cap on simultaneous tree-page requests (root pages + nested branches).
+    let activeReqs = 0;
+    const reqWaiters = [];
+    async function fetchPage(id, offset, refresh) {
+        if (activeReqs >= CFG.CONCURRENCY + 4) await new Promise((r) => reqWaiters.push(r));
+        activeReqs++;
+        try {
+            return await fetchPageRaw(id, offset, refresh);
+        } finally {
+            activeReqs--;
+            const w = reqWaiters.shift();
+            if (w) w();
+        }
     }
 
     // Walks up from an entered project that is not reachable from the root's pages.
@@ -287,6 +302,26 @@
         let stopAt = Infinity; // first short page offset
         let rootFromPage = null;
         let lastEmit = 0;
+        const failed = new Set();
+        const expansions = new Map(); // nodeId -> full child list fetched for a nested branch
+
+        const applyExpansions = (tree) => {
+            const stack = [tree];
+            while (stack.length) {
+                const n = stack.pop();
+                const ex = expansions.get(String(n.id));
+                if (ex) {
+                    const byId = new Map();
+                    for (const c of n.children) byId.set(c.id, c);
+                    for (const c of ex) {
+                        const old = byId.get(c.id);
+                        if (!old || c.children.length > old.children.length) byId.set(c.id, c);
+                    }
+                    n.children = Array.from(byId.values()).sort(cmpNodes);
+                }
+                for (let i = 0; i < n.children.length; i++) stack.push(n.children[i]);
+            }
+        };
 
         const assemble = () => {
             const base = rootFromPage || rootProject;
@@ -307,10 +342,11 @@
                 const copy = JSON.parse(JSON.stringify(branch.node));
                 if (!attachChild(tree, branch.attachTo, copy)) attachChild(tree, tree.id, copy);
             }
+            applyExpansions(tree);
             return { enteredProject, rootProject: base, tree };
         };
 
-        const emitPartial = (force) => {
+        const emitPartial = (force, msg) => {
             const now = performance.now();
             if (!force && now - lastEmit < 750) return;
             if (!pages.size) return;
@@ -320,6 +356,7 @@
             onEvent({
                 type: "progress",
                 message:
+                    msg ||
                     "Streaming remixes: " + snap.tree.children.length + " / ~" + Math.max(est, snap.tree.children.length) + " direct...",
             });
         };
@@ -330,7 +367,11 @@
         });
 
         const ingest = (off, page) => {
-            if (!page) return;
+            if (!page) {
+                failed.add(off);
+                return;
+            }
+            failed.delete(off);
             const list = Array.isArray(page.children) ? page.children : [];
             if (off === 0 && !rootFromPage) {
                 rootFromPage = compact(Object.assign({}, page, { children: [] }));
@@ -373,11 +414,111 @@
             e.status = 502;
             throw e;
         }
+        // Retry root pages that failed (timeouts / rate limits) once more.
+        if (failed.size) {
+            await Promise.all(
+                Array.from(failed).map(async (off) => ingest(off, await fetchPage(rootId, off, refresh)))
+            );
+        }
         const b = await branchPromise;
         if (b) branch = b;
 
+        // 4) Nested branches: the page API only returns part of the deeper levels, so
+        //    fetch the real children of every node whose remix count is higher than
+        //    what we have. The entered project's branch goes first.
+        const expandedIds = new Set();
+        let requests = 0;
+        let failedBranches = 0;
+
+        const expandNode = async (node) => {
+            const nid = node.id;
+            const last = node.stats.remixes > 0 ? Math.floor((node.stats.remixes - 1) / PAGE) * PAGE : 0;
+            const first = await fetchPage(nid, 0, refresh);
+            requests++;
+            if (!first) {
+                failedBranches++;
+                return;
+            }
+            const out = [];
+            const seen = new Set();
+            const take = (page) => {
+                for (const c of Array.isArray(page.children) ? page.children : []) {
+                    if (!seen.has(c.id)) {
+                        seen.add(c.id);
+                        out.push(compact(c));
+                    }
+                }
+            };
+            take(first);
+            if ((first.children || []).length >= PAGE) {
+                const offs = [];
+                for (let o = PAGE; o <= last; o += PAGE) offs.push(o);
+                const results = await Promise.all(offs.map((o) => fetchPage(nid, o, refresh)));
+                requests += offs.length;
+                for (const r of results) {
+                    if (r) take(r);
+                    else failedBranches++;
+                }
+            }
+            expansions.set(String(nid), out);
+        };
+
+        const collectCandidates = (tree) => {
+            const out = [];
+            const parent = new Map();
+            const underEntered = new Set();
+            const stack = [tree];
+            let enteredNode = null;
+            const nodes = [];
+            while (stack.length) {
+                const n = stack.pop();
+                nodes.push(n);
+                if (n.id === enteredProject.id) enteredNode = n;
+                for (const c of n.children) {
+                    parent.set(c, n);
+                    stack.push(c);
+                }
+            }
+            const priority = new Set();
+            for (let n = enteredNode; n; n = parent.get(n)) priority.add(n);
+            for (const n of nodes) {
+                for (let p = n; p; p = parent.get(p)) {
+                    if (p === enteredNode) {
+                        underEntered.add(n);
+                        break;
+                    }
+                }
+            }
+            for (const n of nodes) {
+                if (n === tree || expandedIds.has(n.id)) continue;
+                if (n.stats.remixes > n.children.length) out.push(n);
+            }
+            out.sort((a, b) => {
+                const pa = priority.has(a) || underEntered.has(a) ? 0 : 1;
+                const pb = priority.has(b) || underEntered.has(b) ? 0 : 1;
+                return pa - pb || b.stats.remixes - a.stats.remixes;
+            });
+            return out;
+        };
+
+        let limitHit = false;
+        while (requests < CFG.MAX_EXPAND_REQUESTS) {
+            const cands = collectCandidates(assemble().tree);
+            if (!cands.length) break;
+            const batch = cands.slice(0, CFG.CONCURRENCY);
+            for (const n of batch) expandedIds.add(n.id);
+            emitPartial(false, "Loading nested remixes (" + cands.length + " branches left)...");
+            await Promise.all(batch.map(expandNode));
+        }
+        if (requests >= CFG.MAX_EXPAND_REQUESTS && collectCandidates(assemble().tree).length) limitHit = true;
+
         const done = assemble();
-        cachePut(key, done);
+        const problems = [];
+        if (failed.size) problems.push(failed.size + " page(s) failed to load");
+        if (failedBranches) problems.push(failedBranches + " branch request(s) failed");
+        if (limitHit) problems.push("some deep branches not loaded (request limit reached)");
+        done.warning = problems.length ? problems.join(", ") + " - use the refresh button to retry" : null;
+        if (!done.warning) cachePut(key, done);
         onEvent({ type: "done", ...done });
         return done;
     }
