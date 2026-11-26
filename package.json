@@ -1,15 +1,10 @@
 {
   "name": "treemixtree",
-  "version": "1.0.0",
-  "description": "A recreation of Scratch's remix tree feature",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "A recreation of Scratch's remix tree feature (static site, GitHub Pages)",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
+    "dev": "python3 -m http.server 3000",
     "build": "echo \"No build step required for static site\"",
-    "lint": "node --check server.js && node --check assets/main.js && node --check assets/canvasTree.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2"
+    "lint": "node --check assets/config.js && node --check assets/treeLoader.js && node --check assets/main.js && node --check assets/canvasTree.js"
   }
 }

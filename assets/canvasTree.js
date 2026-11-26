@@ -13,10 +13,16 @@
     const wasmReady = (async () => {
         try {
             if (typeof WebAssembly === "undefined") return null;
-            const res = await fetch("/assets/tree_layout.wasm");
-            if (!res.ok) return null;
-            const bytes = await res.arrayBuffer();
-            const { instance } = await WebAssembly.instantiate(bytes, {});
+            const url = new URL("tree_layout.wasm", document.currentScript ? document.currentScript.src : new URL("assets/", location.href)).href;
+            let instance;
+            try {
+                // Compiles while downloading (needs application/wasm, which GitHub Pages sends).
+                ({ instance } = await WebAssembly.instantiateStreaming(fetch(url), {}));
+            } catch (_) {
+                const res = await fetch(url);
+                if (!res.ok) return null;
+                ({ instance } = await WebAssembly.instantiate(await res.arrayBuffer(), {}));
+            }
             wasmExports = instance.exports;
             return wasmExports;
         } catch (err) {

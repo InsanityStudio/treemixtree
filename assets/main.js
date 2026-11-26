@@ -205,9 +205,12 @@ async function showProjectInfo(event) {
     const id = event.target.href.split("/").at("-1");
     window.fetchTarget = id;
     document.querySelector("#preview-img").src = `https://cdn2.scratch.mit.edu/get_image/project/${id}_200x150.png`;
-    const res = await fetch(`/api/project/${id}`);
-    if (!res.ok) return;
-    const response = await res.json();
+    let response;
+    try {
+        response = TreeLoader.compact(Object.assign({}, await TreeLoader.fetchProject(parseInt(id, 10)), { children: [] }));
+    } catch {
+        return;
+    }
     if (window.fetchTarget == id) {
         showPreviewFromNode(response);
     }
@@ -244,56 +247,42 @@ function convertDataForScratch(data, newData, parentId) {
 
 function fetchTreeStream(id, refreshFlag, onPartial, onProgress) {
     const loadingInfo = document.querySelector("#loading-info");
-    const qs = refreshFlag ? "?refresh=1" : "";
-
-    return new Promise((resolve, reject) => {
-        if (typeof EventSource === "undefined") {
-            fetch(`/api/tree/${id}${qs}`)
-                .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-                .then(resolve)
-                .catch(reject);
-            return;
-        }
-
-        const es = new EventSource(`/api/tree/${id}/stream${qs}`);
-        let settled = false;
-
-        es.onmessage = async (evt) => {
-            try {
-                const payload = JSON.parse(evt.data);
-                if (payload.type === "progress") {
-                    loadingInfo.textContent = payload.message;
-                    if (onProgress) onProgress(payload.message);
-                } else if (payload.type === "partial") {
-                    if (onPartial) await onPartial(payload);
-                } else if (payload.type === "done") {
-                    settled = true;
-                    es.close();
-                    resolve(payload);
-                } else if (payload.type === "error") {
-                    settled = true;
-                    es.close();
-                    const err = new Error(payload.message || "Failed to load");
-                    err.status = payload.status;
-                    reject(err);
-                }
-            } catch (err) {
-                settled = true;
-                es.close();
-                reject(err);
+    return TreeLoader.loadTree(id, {
+        refresh: refreshFlag,
+        onEvent: (payload) => {
+            if (payload.type === "progress") {
+                loadingInfo.textContent = payload.message;
+                if (onProgress) onProgress(payload.message);
+            } else if (payload.type === "partial") {
+                if (onPartial) onPartial(payload);
             }
-        };
-
-        es.onerror = () => {
-            if (settled) return;
-            es.close();
-            // Fallback to plain JSON endpoint once
-            fetch(`/api/tree/${id}${qs}`)
-                .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-                .then(resolve)
-                .catch(reject);
-        };
+        },
     });
+}
+
+/* Load heavy legacy-viewer libraries only when that viewer is selected. */
+function loadScriptOnce(src) {
+    window._loadedScripts = window._loadedScripts || {};
+    if (window._loadedScripts[src]) return window._loadedScripts[src];
+    return (window._loadedScripts[src] = new Promise((res, rej) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = res;
+        script.onerror = () => rej(new Error("Failed to load " + src));
+        document.head.appendChild(script);
+    }));
+}
+
+async function loadTreantLibs() {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://cdn.jsdelivr.net/npm/treant-js@1.0.1/Treant.css";
+    document.head.appendChild(css);
+    // Same order as the original page: jQuery (CDN), Treant, Raphael, local jQuery.
+    await loadScriptOnce("https://cdn.jsdelivr.net/npm/jquery@3.7.1");
+    await loadScriptOnce("https://cdn.jsdelivr.net/npm/treant-js@1.0.1/Treant.js");
+    await loadScriptOnce("assets/libraries/raphael.js");
+    await loadScriptOnce("assets/libraries/jquery.min.js");
 }
 
 async function setupCanvasViewer(treeData) {
@@ -474,7 +463,7 @@ function patchScratchPageturners() {
 (async function () {
     window.id = parseInt(location.hash.slice(1), 10);
     if (!window.id) {
-        location.href = "/";
+        location.href = "./";
         return;
     }
     const params = new URLSearchParams(location.search);
@@ -534,8 +523,8 @@ function patchScratchPageturners() {
         await partialChain;
     } catch (err) {
         console.error(err);
-        const msg = err.status === 404 ? "Project not found." : "Failed to load remix tree.";
-        document.querySelector("#loading-info").innerHTML = `<div>${msg}</div><div><a href="/">Go back</a></div>`;
+        const msg = err.status === 404 ? "Project not found." : err.status === 502 ? err.message : "Failed to load remix tree.";
+        document.querySelector("#loading-info").innerHTML = `<div>${msg}</div><div><a href="./">Go back</a></div>`;
         return;
     }
 
@@ -552,6 +541,7 @@ function patchScratchPageturners() {
             if (window._refreshCanvasSearch) window._refreshCanvasSearch();
         }
     } else if (window.viewer == "treant") {
+        await loadTreantLibs();
         document.querySelector("#treant-remixtree").hidden = false;
         const chart_config = {
             chart: {
@@ -624,16 +614,7 @@ async function treeScratch(data) {
     };
     treeURL = URL.createObjectURL(new Blob([JSON.stringify(newData)], { type: "text/plain" }));
 
-    function loadScript(src) {
-        const script = document.createElement("script");
-        script.src = src;
-        document.body.appendChild(script);
-        return new Promise((res, rej) => {
-            script.onload = res;
-            script.onerror = rej;
-        });
-    }
-    await loadScript("/assets/libraries/jquery.min.js");
-    await loadScript("/assets/libraries/treejs.js");
+    await loadScriptOnce("assets/libraries/jquery.min.js");
+    await loadScriptOnce("assets/libraries/treejs.js");
     window.buildTree(treeURL, window.id);
 }
