@@ -1,7 +1,7 @@
 window.onhashchange = () => location.reload();
-window.onerror = function (msg, url, line, col, error) {
-    if (!msg.includes("projectbox") && !msg.includes("App")) {
-        alert("Error: " + msg);
+window.onerror = function (msg) {
+    if (!String(msg).includes("projectbox") && !String(msg).includes("App")) {
+        console.error("Error: " + msg);
     }
 };
 
@@ -12,7 +12,7 @@ document.querySelector("#next").addEventListener("click", () => move(10));
 
 function move(amount) {
     const params = new URLSearchParams(location.search);
-    params.set("offset", parseInt(window.offset) + amount);
+    params.set("offset", parseInt(window.offset || 0, 10) + amount);
     location.search = "?" + params.toString();
 }
 
@@ -41,7 +41,6 @@ function handleResize() {
 
         const zoomEl = document.querySelector("#zoomContainer");
         zoomEl.style.scale = 1 / scale;
-        // zoomEl.style.top = `calc(5px * ${scale})`
     }
 }
 
@@ -49,50 +48,133 @@ function handleSubmit(evt) {
     evt.preventDefault();
     if (!document.querySelector("#idPicker").value) return;
     const params = new URLSearchParams(location.search);
-    let paramsString = `?viewer=${params.get("viewer") || "scratch"}`;
+    const paramsString = `?viewer=${params.get("viewer") || "canvas"}`;
     window.history.replaceState({}, "", `${location.origin}${location.pathname}${paramsString}${location.hash}`);
     location.hash = `#${document.querySelector("#idPicker").value}`;
 }
 
 function validate(evt) {
-    var theEvent = evt || window.event;
+    const theEvent = evt || window.event;
     if (evt.key == "Enter") return;
 
-    // Handle paste
+    let key;
     if (theEvent.type === "paste") {
         key = evt.clipboardData.getData("text/plain");
     } else {
-        // Handle key press
-        var key = theEvent.keyCode || theEvent.which;
-        key = String.fromCharCode(key);
+        const charCode = theEvent.keyCode || theEvent.which;
+        key = String.fromCharCode(charCode);
     }
-    var regex = /[0-9]|\./;
+    const regex = /[0-9]|\./;
     if (!regex.test(key)) {
         theEvent.returnValue = false;
         if (theEvent.preventDefault) theEvent.preventDefault();
     }
 }
 
+function countTreeStats(node, depth = 0) {
+    if (!node) return { count: 0, maxDepth: depth };
+    let count = 1;
+    let maxDepth = depth;
+    const children = Array.isArray(node.children) ? node.children : [];
+    for (const child of children) {
+        const sub = countTreeStats(child, depth + 1);
+        count += sub.count;
+        if (sub.maxDepth > maxDepth) maxDepth = sub.maxDepth;
+    }
+    return { count, maxDepth };
+}
+
+function updateHeaderInfo(enteredProject, rootProject, tree, isStreaming = false, progressMsg = "") {
+    const info = document.querySelector("#info");
+    window.rootId = rootProject.id;
+
+    const titleLink = info.querySelector("#title-link");
+    titleLink.innerText = enteredProject.title;
+    titleLink.href = `https://scratch.mit.edu/projects/${enteredProject.id}`;
+
+    const rootInfo = info.querySelector("#root-info");
+    if (rootInfo) {
+        if (rootProject.id !== enteredProject.id) {
+            rootInfo.innerHTML = "";
+            rootInfo.append(" (root: ");
+            const rootLink = document.createElement("a");
+            rootLink.target = "_blank";
+            rootLink.href = `https://scratch.mit.edu/projects/${rootProject.id}`;
+            rootLink.innerText = rootProject.title;
+            rootInfo.append(rootLink, ")");
+        } else {
+            rootInfo.innerHTML = "";
+        }
+    }
+
+    const statsEl = document.querySelector("#tree-stats");
+    if (statsEl && tree) {
+        const { count, maxDepth } = countTreeStats(tree);
+        const suffix = isStreaming ? ` • ${progressMsg || "streaming..."}` : "";
+        statsEl.textContent = `${count} projects • ${maxDepth + 1} layers${suffix}`;
+    }
+
+    document.querySelector("#buttons").hidden = true;
+}
+
+function showPreviewFromNode(nodeData) {
+    const preview = document.querySelector("#project-preview");
+    if (!nodeData) {
+        preview.hidden = true;
+        return;
+    }
+
+    preview.hidden = false;
+    const isUnshared = nodeData.is_published === false || nodeData.visibility !== "visible";
+    const previewImg = document.querySelector("#preview-img");
+    if (isUnshared) {
+        previewImg.src =
+            "data:image/svg+xml;utf8," +
+            encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150"><rect width="200" height="150" fill="#e2e8f0"/><text x="100" y="75" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="14" font-weight="600" fill="#475569">Unshared / Unavailable</text></svg>'
+            );
+    } else {
+        previewImg.src = `https://cdn2.scratch.mit.edu/get_image/project/${nodeData.id}_200x150.png`;
+    }
+    const titleEl = document.querySelector("#preview-title");
+    titleEl.innerText = nodeData.title || "Untitled";
+    titleEl.href = `https://scratch.mit.edu/projects/${nodeData.id}`;
+
+    const authorName = typeof nodeData.author === "string" ? nodeData.author : nodeData.author?.username || "Unknown";
+    document.querySelector("#preview-author").innerText = "by " + authorName;
+
+    const dateStr = nodeData.created || nodeData.history?.created || nodeData.shared || nodeData.history?.shared;
+    document.querySelector("#preview-created").innerText = dateStr
+        ? "Created " + new Date(dateStr).toLocaleDateString()
+        : "";
+
+    const stats = nodeData.stats || {};
+    document.querySelector("#preview-loves").innerText = `${stats.loves ?? 0} ❤️`;
+    document.querySelector("#preview-faves").innerText = `${stats.favorites ?? 0} ⭐`;
+    document.querySelector("#preview-views").innerText = `${stats.views ?? 0} 👁️`;
+    const childCount = Array.isArray(nodeData.children) ? nodeData.children.length : stats.remixes ?? 0;
+    document.querySelector("#preview-remixes").innerText = `${childCount}`;
+}
+
 function consolidateData(scratchTree, level = 0) {
-    // console.log(level)
     let size;
     if (level < 2) {
         size = 50;
-        // } else if (level < 5) {
-        //     size = 15
     } else {
         size = Math.max(10, 30 - level * 2);
     }
 
-    let myVal = {
+    const myVal = {
         image: `https://uploads.scratch.mit.edu/get_image/project/${scratchTree.id}_${size}x${Math.round(size * (3 / 4))}.png`,
         link: {
             href: `https://scratch.mit.edu/projects/${scratchTree.id}`,
             target: "_blank",
         },
-        // stackChildren: true
     };
-    if (scratchTree.children) {
+    if (scratchTree.id == window.id) {
+        myVal.HTMLclass = "focused-node";
+    }
+    if (Array.isArray(scratchTree.children) && scratchTree.children.length > 0) {
         myVal.children = scratchTree.children.map((child) => consolidateData(child, level + 1));
     }
     return myVal;
@@ -100,49 +182,19 @@ function consolidateData(scratchTree, level = 0) {
 
 function checkLoad() {
     if (document.querySelector(".Treant-loaded")) {
-        // setTimeout(function() {
-        const chart = document.querySelector(".chart");
-        // chart.style.width = "100%"
-        // chart.style.height = "100%"
-        // chart.style.overflowY = "hidden"
         const nodes = Array.from(document.querySelectorAll(".Treant > .node"));
-        nodes.at(-1).scrollIntoView({
-            behavior: "auto",
-            block: "center",
-            inline: "center",
-        });
-
+        const targetNode = document.querySelector(".Treant > .node.focused-node") || nodes.at(-1);
+        if (targetNode) {
+            targetNode.scrollIntoView({
+                behavior: "auto",
+                block: "center",
+                inline: "center",
+            });
+        }
         document.querySelector("#loading-container").hidden = true;
-        // }, 500)
     } else {
         setTimeout(checkLoad, 50);
     }
-}
-
-async function showInfo() {
-    const info = document.querySelector("#info");
-    const r = await fetch(`https://trampoline.turbowarp.org/api/projects/${window.id}`);
-    const response = await r.json();
-    if (r.status == 404) {
-        alert("Project not found");
-        location.href = "/";
-        window.nope = true;
-        return;
-    }
-    const remixes = response.stats.remixes;
-    info.querySelector("#title-link").innerText = response.title;
-    info.querySelector("#title-link").href = `https://scratch.mit.edu/projects/${response.id}`;
-    if (window.offset == 0) {
-        document.querySelector("#prevCount").parentElement.hidden = true;
-    } else {
-        document.querySelector("#prevCount").innerText = window.offset;
-    }
-    if (remixes - 10 - window.offset <= 0) {
-        document.querySelector("#nextCount").parentElement.hidden = true;
-    } else {
-        document.querySelector("#nextCount").innerText = remixes - 10 - window.offset;
-    }
-    document.querySelector("#buttons").hidden = false;
 }
 
 async function showProjectInfo(event) {
@@ -152,18 +204,12 @@ async function showProjectInfo(event) {
     document.querySelector("#project-preview").hidden = false;
     const id = event.target.href.split("/").at("-1");
     window.fetchTarget = id;
-    console.log(id);
     document.querySelector("#preview-img").src = `https://cdn2.scratch.mit.edu/get_image/project/${id}_200x150.png`;
-    document.querySelector("#preview-title").innerText;
-    const response = await (await fetch(`https://trampoline.turbowarp.org/api/projects/${id}`)).json();
+    const res = await fetch(`/api/project/${id}`);
+    if (!res.ok) return;
+    const response = await res.json();
     if (window.fetchTarget == id) {
-        document.querySelector("#preview-title").innerText = response.title;
-        document.querySelector("#preview-author").innerText = "by " + response.author.username;
-        document.querySelector("#preview-created").innerText = "Created " + new Date(response.history.shared).toLocaleDateString();
-        document.querySelector("#preview-loves").innerText = `${response.stats.loves} ❤️`;
-        document.querySelector("#preview-faves").innerText = `${response.stats.favorites} ⭐`;
-        document.querySelector("#preview-views").innerText = `${response.stats.views} 👁️`;
-        document.querySelector("#preview-remixes").innerText = `${response.stats.remixes}`;
+        showPreviewFromNode(response);
     }
 }
 
@@ -178,41 +224,263 @@ function hideProjectInfo() {
 }
 
 function convertDataForScratch(data, newData, parentId) {
-    function makeDate(date) {
-        return new Date(date).toLocaleString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            hour: "numeric",
-            minute: "numeric",
-        });
-    }
+    const children = Array.isArray(data.children) ? data.children : [];
+    const authorName = typeof data.author === "string" ? data.author : data.author?.username || "Unknown";
     newData[data.id.toString()] = {
-        title: data.title,
-        creator: data.author.username,
-        favorite_count: data.stats.favorites,
-        love_count: data.stats.loves,
+        title: data.title || "Untitled",
+        creator: authorName,
+        favorite_count: data.stats?.favorites ?? 0,
+        love_count: data.stats?.loves ?? 0,
         parent_id: parentId,
-        visibility: "visible",
+        visibility: data.visibility || "visible",
         moderation_status: "safe",
-        is_published: true,
-        children: data.children.map((r) => r.id.toString()),
+        is_published: data.is_published !== undefined ? data.is_published : true,
+        children: children.map((r) => r.id.toString()),
     };
-    for (const remix of data.children) {
+    for (const remix of children) {
         convertDataForScratch(remix, newData, data.id);
     }
 }
 
+function fetchTreeStream(id, refreshFlag, onPartial, onProgress) {
+    const loadingInfo = document.querySelector("#loading-info");
+    const qs = refreshFlag ? "?refresh=1" : "";
+
+    return new Promise((resolve, reject) => {
+        if (typeof EventSource === "undefined") {
+            fetch(`/api/tree/${id}${qs}`)
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+                .then(resolve)
+                .catch(reject);
+            return;
+        }
+
+        const es = new EventSource(`/api/tree/${id}/stream${qs}`);
+        let settled = false;
+
+        es.onmessage = async (evt) => {
+            try {
+                const payload = JSON.parse(evt.data);
+                if (payload.type === "progress") {
+                    loadingInfo.textContent = payload.message;
+                    if (onProgress) onProgress(payload.message);
+                } else if (payload.type === "partial") {
+                    if (onPartial) await onPartial(payload);
+                } else if (payload.type === "done") {
+                    settled = true;
+                    es.close();
+                    resolve(payload);
+                } else if (payload.type === "error") {
+                    settled = true;
+                    es.close();
+                    const err = new Error(payload.message || "Failed to load");
+                    err.status = payload.status;
+                    reject(err);
+                }
+            } catch (err) {
+                settled = true;
+                es.close();
+                reject(err);
+            }
+        };
+
+        es.onerror = () => {
+            if (settled) return;
+            es.close();
+            // Fallback to plain JSON endpoint once
+            fetch(`/api/tree/${id}${qs}`)
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+                .then(resolve)
+                .catch(reject);
+        };
+    });
+}
+
+async function setupCanvasViewer(treeData) {
+    const wrapper = document.querySelector("#canvas-wrapper");
+    const container = document.querySelector("#canvas-container");
+    wrapper.hidden = false;
+
+    if (window.CanvasRemixTree.ready) {
+        await window.CanvasRemixTree.ready;
+    }
+
+    const tree = new window.CanvasRemixTree(container, treeData, {
+        focusId: window.id,
+        onSelectNode: (node) => showPreviewFromNode(node),
+        onHoverNode: (node) => {
+            if (node) {
+                showPreviewFromNode(node);
+            } else {
+                const selected = tree.nodeById.get(tree.selectedId);
+                if (selected) showPreviewFromNode(selected.raw);
+                else showPreviewFromNode(null);
+            }
+        },
+    });
+    window.canvasTree = tree;
+
+    const initialSelected = tree.nodeById.get(tree.selectedId);
+    if (initialSelected) {
+        showPreviewFromNode(initialSelected.raw);
+    }
+
+    document.querySelector("#hud-zoom-in").onclick = () => tree.zoomIn();
+    document.querySelector("#hud-zoom-reset").onclick = () => tree.zoomReset();
+    document.querySelector("#hud-zoom-out").onclick = () => tree.zoomOut();
+    document.querySelector("#hud-fit").onclick = () => tree.fitTree();
+    document.querySelector("#hud-focus").onclick = () => tree.focusProject();
+    document.querySelector("#hud-root").onclick = () => tree.focusRoot();
+
+    const searchBox = document.querySelector("#search-box");
+    const searchInput = document.querySelector("#tree-search");
+    const searchResults = document.querySelector("#search-results");
+    searchBox.hidden = false;
+    let searchMatches = [];
+    let activeIdx = 0;
+
+    function selectMatch(idx, hideDropdown = false) {
+        if (!searchMatches.length) return;
+        activeIdx = ((idx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+        const match = searchMatches[activeIdx];
+        tree.centerOnNode(match.node, Math.max(tree.zoom, 0.85));
+        const items = searchResults.querySelectorAll(".search-item");
+        items.forEach((el, i) => el.classList.toggle("active", i === activeIdx));
+        if (items[activeIdx]) {
+            items[activeIdx].scrollIntoView({ block: "nearest" });
+        }
+        if (hideDropdown) {
+            searchResults.hidden = true;
+        }
+    }
+
+    function renderSearchDropdown() {
+        const q = searchInput.value.trim();
+        if (!q) {
+            searchResults.hidden = true;
+            searchResults.innerHTML = "";
+            return;
+        }
+
+        const searchRes = tree.search(q);
+        const total = searchRes.total ?? searchRes.length ?? 0;
+        searchMatches = searchRes.items || searchRes;
+        activeIdx = 0;
+        searchResults.innerHTML = "";
+
+        const summary = document.createElement("div");
+        summary.className = "search-summary";
+        summary.textContent =
+            total === 0
+                ? "No matching projects or creators"
+                : `${total} match${total === 1 ? "" : "es"}${
+                      total > searchMatches.length ? ` (showing top ${searchMatches.length})` : ""
+                  }`;
+        searchResults.appendChild(summary);
+
+        const limit = searchMatches.length;
+        for (let i = 0; i < limit; i++) {
+            const m = searchMatches[i];
+            const item = document.createElement("div");
+            item.className = "search-item" + (i === 0 ? " active" : "");
+
+            const titleEl = document.createElement("div");
+            titleEl.className = "search-item-title";
+            titleEl.textContent = m.title;
+
+            const metaEl = document.createElement("div");
+            metaEl.className = "search-item-meta";
+            metaEl.textContent = `by ${m.author} • Layer ${m.depth + 1} • #${m.id}`;
+
+            item.append(titleEl, metaEl);
+            item.addEventListener("mousedown", (e) => {
+                e.preventDefault();
+                selectMatch(i, true);
+            });
+            searchResults.appendChild(item);
+        }
+
+        searchResults.hidden = false;
+    }
+
+    window._refreshCanvasSearch = () => {
+        if (searchInput.value.trim() && document.activeElement === searchInput) {
+            renderSearchDropdown();
+        }
+    };
+
+    searchInput.addEventListener("input", () => {
+        renderSearchDropdown();
+    });
+
+    searchInput.addEventListener("focus", () => {
+        if (searchInput.value.trim()) {
+            renderSearchDropdown();
+        }
+    });
+
+    searchInput.addEventListener("blur", () => {
+        setTimeout(() => {
+            searchResults.hidden = true;
+        }, 120);
+    });
+
+    searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (searchMatches.length > 0) selectMatch(activeIdx + 1, false);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            if (searchMatches.length > 0) selectMatch(activeIdx - 1, false);
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (searchMatches.length === 0 && searchInput.value.trim()) {
+                renderSearchDropdown();
+            }
+            if (searchMatches.length > 0) {
+                selectMatch(activeIdx, false);
+                activeIdx = (activeIdx + 1) % searchMatches.length;
+            }
+        } else if (e.key === "Escape") {
+            searchResults.hidden = true;
+            searchInput.blur();
+        }
+    });
+
+    document.querySelector("#loading-container").hidden = true;
+}
+
+function patchScratchPageturners() {
+    // Make sure pageturners (e.g. "611 more >") sit above project boxes and their SVG text doesn't swallow clicks
+    if (window.App && window.App.rootView) {
+        const queue = [window.App.rootView];
+        while (queue.length > 0) {
+            const branchView = queue.pop();
+            if (branchView.pageturners) {
+                branchView.pageturners.sprite.toFront();
+                for (const textSet of [branchView.pageturners.leftText, branchView.pageturners.rightText]) {
+                    textSet?.forEach?.((el) => {
+                        if (el?.node) el.node.setAttribute("pointer-events", "none");
+                    });
+                }
+            }
+            if (Array.isArray(branchView.myBranches)) {
+                for (const child of branchView.myBranches) queue.push(child);
+            }
+        }
+    }
+}
+
 (async function () {
-    window.id = parseInt(location.hash.slice(1));
+    window.id = parseInt(location.hash.slice(1), 10);
     if (!window.id) {
         location.href = "/";
         return;
     }
     const params = new URLSearchParams(location.search);
     window.offset = params.get("offset") ?? 0;
-    window.viewer = params.get("viewer") ?? "scratch";
-    document.querySelector("select").value = viewer;
+    window.viewer = params.get("viewer") ?? "canvas";
+    document.querySelector("select").value = window.viewer;
     const getNew = params.get("new");
     params.delete("new");
     let paramsString = "?" + params.toString();
@@ -220,82 +488,115 @@ function convertDataForScratch(data, newData, parentId) {
         paramsString = "";
     }
     window.history.replaceState({}, "", `${location.origin}${location.pathname}${paramsString}${location.hash}`);
-    console.log(id, offset);
-    document.querySelector("#idPicker").value = id;
-    await showInfo();
-    if (window.nope) return;
+    document.querySelector("#idPicker").value = window.id;
 
-    let noticeTimer = setTimeout(function () {
-        document.querySelector("#loading-info").innerHTML = "<div>Generating remix tree...</div><div>This might take a while</div>";
-    }, 2500);
+    let canvasInitialized = false;
+    let latestPartialMeta = null;
+    let latestProgressMsg = "streaming...";
+    let partialChain = Promise.resolve();
 
-    window.data = await (
-        await fetch(`https://renderapi.quuq.dev/remixtree/${id}?offset=${offset}`, {
-            headers: getNew ? { "X-RefreshTree": "true" } : undefined,
-            cache: getNew ? "reload" : undefined,
-            signal: AbortSignal.timeout(999999999),
-        })
-    ).json();
-    clearTimeout(noticeTimer);
-    document.querySelector("#loading-info").innerHTML = "Rendering remix tree...";
-    console.log(consolidateData(data));
+    const applyPartialPayload = async (payload) => {
+        if (window.viewer !== "canvas") return;
+        latestPartialMeta = payload;
+        window.data = payload.tree;
+        updateHeaderInfo(payload.enteredProject, payload.rootProject, payload.tree, true, latestProgressMsg);
+        if (!canvasInitialized) {
+            canvasInitialized = true;
+            await setupCanvasViewer(payload.tree);
+        } else if (window.canvasTree) {
+            window.canvasTree.updateData(payload.tree);
+            if (window._refreshCanvasSearch) window._refreshCanvasSearch();
+        }
+    };
 
-    if (viewer == "treant") {
+    let result;
+    try {
+        result = await fetchTreeStream(
+            window.id,
+            Boolean(getNew),
+            (payload) => {
+                partialChain = partialChain.then(() => applyPartialPayload(payload));
+                return partialChain;
+            },
+            (msg) => {
+                latestProgressMsg = msg;
+                if (canvasInitialized && latestPartialMeta) {
+                    updateHeaderInfo(
+                        latestPartialMeta.enteredProject,
+                        latestPartialMeta.rootProject,
+                        window.data,
+                        true,
+                        msg
+                    );
+                }
+            }
+        );
+        await partialChain;
+    } catch (err) {
+        console.error(err);
+        const msg = err.status === 404 ? "Project not found." : "Failed to load remix tree.";
+        document.querySelector("#loading-info").innerHTML = `<div>${msg}</div><div><a href="/">Go back</a></div>`;
+        return;
+    }
+
+    const { enteredProject, rootProject, tree } = result;
+    window.data = tree;
+    updateHeaderInfo(enteredProject, rootProject, tree, false);
+
+    if (window.viewer == "canvas") {
+        if (!canvasInitialized) {
+            document.querySelector("#loading-info").innerHTML = "Rendering remix tree...";
+            await setupCanvasViewer(tree);
+        } else if (window.canvasTree) {
+            window.canvasTree.updateData(tree);
+            if (window._refreshCanvasSearch) window._refreshCanvasSearch();
+        }
+    } else if (window.viewer == "treant") {
         document.querySelector("#treant-remixtree").hidden = false;
-        var chart_config = {
+        const chart_config = {
             chart: {
                 container: "#treant-remixtree",
                 rootOrientation: "SOUTH",
                 maxDepth: 10000,
                 levelSeparation: 10,
                 siblingSeparation: 5,
-                // subTreeSeperation: 1,
-                // subTeeSeperation: 1,
-                // animateOnInit: false,
-                // node: {
-                //     collapsable: false
-                // },
-                // animation: {
-                //     nodeAnimation: "easeOutBounce",
-                //     nodeSpeed: 700,
-                //     connectorsAnimation: "bounce",
-                //     connectorsSpeed: 700
-                // },
                 connectors: {},
             },
-            // node: {
-            //     stackChildren: true
-            // }
+            nodeStructure: consolidateData(tree),
         };
 
-        chart_config.nodeStructure = consolidateData(data);
         setTimeout(checkLoad, 100);
 
         window.tree = new Treant(chart_config);
         const nodes = Array.from(document.querySelectorAll(".Treant > .node"));
         for (const node of nodes) {
-            let str = node.children[0].src;
-            let idx = str.lastIndexOf("_") + 1;
-            let idx2 = str.lastIndexOf(".png");
-            let targetSize = str.slice(idx, idx2).split("x");
+            const str = node.children[0].src;
+            const idx = str.lastIndexOf("_") + 1;
+            const idx2 = str.lastIndexOf(".png");
+            const targetSize = str.slice(idx, idx2).split("x");
             node.style.width = targetSize[0] + "px";
             node.style.height = targetSize[1] + "px";
 
             node.addEventListener("mouseenter", showProjectInfo);
             node.addEventListener("mouseleave", scheduleHideProjectInfo);
         }
-        nodes.at(-1).scrollIntoView({
-            behavior: "auto",
-            block: "center",
-            inline: "center",
-        });
-    } else if (viewer == "scratch") {
+        const targetNode = document.querySelector(".Treant > .node.focused-node") || nodes.at(-1);
+        if (targetNode) {
+            targetNode.scrollIntoView({
+                behavior: "auto",
+                block: "center",
+                inline: "center",
+            });
+        }
+    } else if (window.viewer == "scratch") {
         document.querySelector("#container").style.display = "flex";
-        await treeScratch(data);
+        await treeScratch(tree);
+        patchScratchPageturners();
         handleResize();
         setTimeout(() => {
             document.querySelector("#container").style.backgroundColor = "#92b5ca";
             document.querySelector("#zoomContainer").hidden = false;
+            document.querySelector("#loading-container").hidden = true;
         }, 0);
     }
 })();
@@ -303,53 +604,13 @@ function convertDataForScratch(data, newData, parentId) {
 async function treeScratch(data) {
     /*
     Some code from https://github.com/CST1229/treemix under the MIT license, modified by me
-    The license for the code used:
-
-    MIT License
-
-    Copyright (c) 2025 CST1229
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
     */
-
-    // if (treeURL) {
-    //     URL.revokeObjectURL(treeURL);
-    //     treeURL = "";
-    // }
     let treeURL = "";
 
-    // const treeDiv = document.createElement("div");
-    // treeDiv.id = "tree";
-    // document.body.appendChild(treeDiv);
-    const treeDiv = document.getElementById("#tree");
-
     const newData = {};
-    newData.id = data.id;
-    // this would require fetching the root project. i am not doing that yet
-    const USE_ROOT = false;
-    if (USE_ROOT) {
-        newData.root_id = data.remix.root || data.id;
-        convertDataForScratch(data, newData, data.remix.parent || null);
-    } else {
-        newData.root_id = data.id;
-        convertDataForScratch(data, newData, null);
-    }
+    newData.id = window.id;
+    newData.root_id = data.id;
+    convertDataForScratch(data, newData, null);
 
     window.scratchTreeData = newData;
 
@@ -363,7 +624,6 @@ async function treeScratch(data) {
     };
     treeURL = URL.createObjectURL(new Blob([JSON.stringify(newData)], { type: "text/plain" }));
 
-    // setStatus("Loading libraries...");
     function loadScript(src) {
         const script = document.createElement("script");
         script.src = src;
@@ -375,7 +635,5 @@ async function treeScratch(data) {
     }
     await loadScript("/assets/libraries/jquery.min.js");
     await loadScript("/assets/libraries/treejs.js");
-    // await loadScript(Scratch.INIT_DATA.GLOBAL_URLS.static_url + "js/jquery.min.js");
-    // await loadScript(Scratch.INIT_DATA.GLOBAL_URLS.static_url + "js/treejs.js");
-    window.buildTree(treeURL, data.id);
+    window.buildTree(treeURL, window.id);
 }

@@ -26,36 +26,61 @@
         <span id="title">
             <span>Showing remix tree for </span>
             <a target="_blank" id="title-link">...</a>
+            <span id="root-info"></span>
 
             <img src="/assets/images/refresh.png"
-                style="margin-left: 5px;width: 30px;height: 30px;vertical-align: middle;margin-top: 5px;"
-                title="Regenerate remix tree (might take a while)" onclick="refresh()">
+                style="margin-left: 5px;width: 24px;height: 24px;vertical-align: middle;cursor: pointer;"
+                title="Regenerate remix tree (bypass cache)" onclick="refresh()">
         </span>
-        <form style="display: inline;margin: 0 auto;" onsubmit="handleSubmit(event)" action="">
+        <span id="tree-stats"></span>
+        <form style="display: inline-flex;align-items: center;gap: 6px;margin-left: auto;margin-right: 10px;" onsubmit="handleSubmit(event)" action="">
+            <div id="search-box" hidden>
+                <input type="text" id="tree-search" placeholder="Search title, creator, or ID..." autocomplete="off">
+                <div id="search-results" hidden></div>
+            </div>
             <select onchange="switchViewer(this.value)">
                 <option disabled>Choose a Viewer</option>
-                <option value="scratch">Scratch</option>
+                <option value="canvas">Interactive (Fast)</option>
+                <option value="scratch">Scratch (classic)</option>
                 <option value="treant">Treant.js (custom)</option>
             </select>
             <input type="text" placeholder='Enter a project id' pattern="^[0-9]*$" onkeypress="validate(event)"
                 id="idPicker">
-            <input type="submit" value="Go" style="padding: 0px 2px;">
+            <input type="submit" value="Go" style="padding: 2px 8px;">
         </form>
         <div id="buttons" hidden>
             <button id="prev">⬅️ See more (<span id="prevCount"></span>)</button>
             <button id="next">See more (<span id="nextCount"></span>) ➡️</button>
         </div>
     </div>
+
     <div id="project-preview" hidden>
         <img id="preview-img" style="width: 200px;height: 150px;">
-        <span id="preview-title"></span><br>
-        <span id="preview-author"></span><br>
-        <span id="preview-created"></span><br>
-        <span id="preview-loves"></span>
-        <span id="preview-faves"></span>
-        <span id="preview-views"></span>
-        <span id="preview-remixes"></span>
+        <div id="preview-details">
+            <a id="preview-title" target="_blank"></a>
+            <div id="preview-author"></div>
+            <div id="preview-created"></div>
+            <div id="preview-stats">
+                <span id="preview-loves"></span>
+                <span id="preview-faves"></span>
+                <span id="preview-views"></span>
+                <span id="preview-remixes"></span>
+            </div>
+        </div>
     </div>
+
+    <div id="canvas-wrapper" hidden>
+        <div id="canvas-container"></div>
+        <div id="canvas-hud">
+            <button class="hud-btn" id="hud-zoom-in" title="Zoom In">+</button>
+            <button class="hud-btn" id="hud-zoom-reset" title="Reset Zoom (1:1)">1:1</button>
+            <button class="hud-btn" id="hud-zoom-out" title="Zoom Out">−</button>
+            <button class="hud-btn" id="hud-fit" title="Fit Entire Tree">Fit</button>
+            <button class="hud-btn" id="hud-focus" title="Jump to Entered Project">Focused</button>
+            <button class="hud-btn" id="hud-root" title="Jump to Root Project">Root</button>
+        </div>
+    </div>
+
     <div class="chart" id="treant-remixtree" hidden></div>
     <div id="container" style="display: none;">
         <div id="tree-container">
@@ -70,11 +95,11 @@
                 <div id="zoomOut" class="zoom" onclick="App.wrapper.zoomOut()">
                     <img src="/assets/images/zoomout.png">
                 </div>
-
-
             </div>
         </div>
     </div>
+
+    <script src="/assets/canvasTree.js"></script>
     <script src="/assets/main.js"></script>
 </body>
 
