@@ -531,6 +531,9 @@ function patchScratchPageturners() {
     const { enteredProject, rootProject, tree } = result;
     window.data = tree;
     updateHeaderInfo(enteredProject, rootProject, tree, false);
+    if (result.warning) {
+        document.querySelector("#tree-stats").textContent += " \u2022 \u26A0 " + result.warning;
+    }
 
     if (window.viewer == "canvas") {
         if (!canvasInitialized) {
